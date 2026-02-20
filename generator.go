@@ -2,6 +2,8 @@ package main
 
 import (
 	"fmt"
+	"path"
+	"path/filepath"
 	"strings"
 
 	"google.golang.org/genproto/googleapis/api/annotations"
@@ -19,6 +21,37 @@ func generateFile(gen *protogen.Plugin, file *protogen.File) {
 
 	g.P(`import { VeloceClient, RequestOptions } from "@vlce/veloce-client";`)
 	g.P()
+
+	// Generate Imports for Dependencies
+	imports := file.Desc.Imports()
+	hasImports := false
+	for i := 0; i < imports.Len(); i++ {
+		imp := imports.Get(i)
+		dep := gen.FilesByPath[imp.Path()]
+		if dep == nil {
+			continue
+		}
+		var importedNames []string
+		for _, msg := range dep.Messages {
+			importedNames = append(importedNames, msg.GoIdent.GoName)
+		}
+		if len(importedNames) > 0 {
+			dir := path.Dir(file.GeneratedFilenamePrefix)
+			rel, err := filepath.Rel(filepath.FromSlash(dir), filepath.FromSlash(dep.GeneratedFilenamePrefix))
+			if err == nil {
+				rel = filepath.ToSlash(rel)
+				if !strings.HasPrefix(rel, ".") && !strings.HasPrefix(rel, "/") {
+					rel = "./" + rel
+				}
+				importPath := rel + ".js"
+				g.P(fmt.Sprintf("import { %s } from \"%s\";", strings.Join(importedNames, ", "), importPath))
+				hasImports = true
+			}
+		}
+	}
+	if hasImports {
+		g.P()
+	}
 
 	// Generate Messages (Interfaces)
 	for _, msg := range file.Messages {
