@@ -1,1 +1,17 @@
 protoc-gen-veloce
+
+buf.gen.yaml
+
+buf.yaml
+
+google/protobuf/empty.ts
+
+google/protobuf/struct.ts
+
+google/protobuf/timestamp.ts
+
+Makefile
+
+test.proto
+
+test.ts

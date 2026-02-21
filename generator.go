@@ -19,8 +19,36 @@ func generateFile(gen *protogen.Plugin, file *protogen.File) {
 	g.P("// source: ", file.Desc.Path())
 	g.P()
 
-	g.P(`import { VeloceClient, RequestOptions } from "@vlce/veloce-client";`)
+	g.P(`import { VeloceClient } from "@vlce/veloce-client";`)
+	g.P(`import type { RequestOptions } from "@vlce/veloce-client";`)
 	g.P()
+
+	// Collect used types in this file to filter dependency imports
+	usedTypes := make(map[string]bool)
+	var collectUsedTypes func(messages []*protogen.Message)
+	collectUsedTypes = func(messages []*protogen.Message) {
+		for _, msg := range messages {
+			for _, field := range msg.Fields {
+				if field.Desc.IsMap() {
+					valField := field.Message.Fields[1]
+					if valField.Message != nil {
+						usedTypes[valField.Message.GoIdent.GoName] = true
+					}
+				} else if field.Message != nil {
+					usedTypes[field.Message.GoIdent.GoName] = true
+				}
+			}
+			collectUsedTypes(msg.Messages) // traverse nested messages
+		}
+	}
+	collectUsedTypes(file.Messages)
+
+	for _, service := range file.Services {
+		for _, method := range service.Methods {
+			usedTypes[method.Input.GoIdent.GoName] = true
+			usedTypes[method.Output.GoIdent.GoName] = true
+		}
+	}
 
 	// Generate Imports for Dependencies
 	imports := file.Desc.Imports()
@@ -32,9 +60,17 @@ func generateFile(gen *protogen.Plugin, file *protogen.File) {
 			continue
 		}
 		var importedNames []string
-		for _, msg := range dep.Messages {
-			importedNames = append(importedNames, msg.GoIdent.GoName)
+		var collectImportNames func(messages []*protogen.Message)
+		collectImportNames = func(messages []*protogen.Message) {
+			for _, msg := range messages {
+				if usedTypes[msg.GoIdent.GoName] {
+					importedNames = append(importedNames, msg.GoIdent.GoName)
+				}
+				collectImportNames(msg.Messages) // traverse nested messages
+			}
 		}
+		collectImportNames(dep.Messages)
+
 		if len(importedNames) > 0 {
 			dir := path.Dir(file.GeneratedFilenamePrefix)
 			rel, err := filepath.Rel(filepath.FromSlash(dir), filepath.FromSlash(dep.GeneratedFilenamePrefix))
@@ -44,7 +80,7 @@ func generateFile(gen *protogen.Plugin, file *protogen.File) {
 					rel = "./" + rel
 				}
 				importPath := rel + ".js"
-				g.P(fmt.Sprintf("import { %s } from \"%s\";", strings.Join(importedNames, ", "), importPath))
+				g.P(fmt.Sprintf("import type { %s } from \"%s\";", strings.Join(importedNames, ", "), importPath))
 				hasImports = true
 			}
 		}
@@ -54,9 +90,17 @@ func generateFile(gen *protogen.Plugin, file *protogen.File) {
 	}
 
 	// Generate Messages (Interfaces)
-	for _, msg := range file.Messages {
-		generateMessage(g, msg)
+	var generateAllMessages func(messages []*protogen.Message)
+	generateAllMessages = func(messages []*protogen.Message) {
+		for _, msg := range messages {
+			if msg.Desc.IsMapEntry() {
+				continue
+			}
+			generateMessage(g, msg)
+			generateAllMessages(msg.Messages)
+		}
 	}
+	generateAllMessages(file.Messages)
 
 	// Generate Services (Classes)
 	for _, service := range file.Services {
@@ -65,6 +109,44 @@ func generateFile(gen *protogen.Plugin, file *protogen.File) {
 }
 
 func generateMessage(g *protogen.GeneratedFile, msg *protogen.Message) {
+	fullName := string(msg.Desc.FullName())
+	if strings.HasPrefix(fullName, "google.protobuf.") {
+		switch string(msg.Desc.Name()) {
+		case "Timestamp", "Duration", "StringValue", "BytesValue", "FieldMask":
+			g.P("export type ", msg.GoIdent.GoName, " = string;")
+			g.P()
+			return
+		case "Int32Value", "UInt32Value", "Int64Value", "UInt64Value", "FloatValue", "DoubleValue":
+			g.P("export type ", msg.GoIdent.GoName, " = number;")
+			g.P()
+			return
+		case "BoolValue":
+			g.P("export type ", msg.GoIdent.GoName, " = boolean;")
+			g.P()
+			return
+		case "Struct":
+			g.P("export type ", msg.GoIdent.GoName, " = { [key: string]: any };")
+			g.P()
+			return
+		case "Value":
+			g.P("export type ", msg.GoIdent.GoName, " = any;")
+			g.P()
+			return
+		case "ListValue":
+			g.P("export type ", msg.GoIdent.GoName, " = any[];")
+			g.P()
+			return
+		case "Empty":
+			g.P("export type ", msg.GoIdent.GoName, " = {};")
+			g.P()
+			return
+		case "Any":
+			g.P("export type ", msg.GoIdent.GoName, " = { '@type': string; [key: string]: any };")
+			g.P()
+			return
+		}
+	}
+
 	g.P("export interface ", msg.GoIdent.GoName, " {")
 	for _, field := range msg.Fields {
 		tsType := getTSType(field)
