@@ -15,3 +15,15 @@ Makefile
 test.proto
 
 test.ts
+
+buf.lock
+
+google/protobuf/descriptor.ts
+
+proto/test/v1/messages.proto
+
+proto/test/v1/rpcs.proto
+
+test/v1/messages.ts
+
+test/v1/rpcs.ts
