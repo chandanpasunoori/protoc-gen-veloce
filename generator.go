@@ -19,11 +19,13 @@ func generateFile(gen *protogen.Plugin, file *protogen.File) {
 	g.P("// source: ", file.Desc.Path())
 	g.P()
 
-	g.P(`import { VeloceClient } from "@vlce/veloce-client";`)
-	g.P(`import type { RequestOptions } from "@vlce/veloce-client";`)
-	g.P()
+	if len(file.Services) > 0 {
+		runtimeImport := relativeImportPath(file.GeneratedFilenamePrefix, runtimeFilePrefix)
+		g.P(`import { VeloceClient } from "`, runtimeImport, `";`)
+		g.P(`import type { RequestOptions } from "`, runtimeImport, `";`)
+		g.P()
+	}
 
-	// Collect used types in this file to filter dependency imports
 	usedTypes := make(map[string]bool)
 	var collectUsedTypes func(messages []*protogen.Message)
 	collectUsedTypes = func(messages []*protogen.Message) {
@@ -38,7 +40,7 @@ func generateFile(gen *protogen.Plugin, file *protogen.File) {
 					usedTypes[field.Message.GoIdent.GoName] = true
 				}
 			}
-			collectUsedTypes(msg.Messages) // traverse nested messages
+			collectUsedTypes(msg.Messages)
 		}
 	}
 	collectUsedTypes(file.Messages)
@@ -50,7 +52,6 @@ func generateFile(gen *protogen.Plugin, file *protogen.File) {
 		}
 	}
 
-	// Generate Imports for Dependencies
 	imports := file.Desc.Imports()
 	hasImports := false
 	for i := 0; i < imports.Len(); i++ {
@@ -66,30 +67,21 @@ func generateFile(gen *protogen.Plugin, file *protogen.File) {
 				if usedTypes[msg.GoIdent.GoName] {
 					importedNames = append(importedNames, msg.GoIdent.GoName)
 				}
-				collectImportNames(msg.Messages) // traverse nested messages
+				collectImportNames(msg.Messages)
 			}
 		}
 		collectImportNames(dep.Messages)
 
 		if len(importedNames) > 0 {
-			dir := path.Dir(file.GeneratedFilenamePrefix)
-			rel, err := filepath.Rel(filepath.FromSlash(dir), filepath.FromSlash(dep.GeneratedFilenamePrefix))
-			if err == nil {
-				rel = filepath.ToSlash(rel)
-				if !strings.HasPrefix(rel, ".") && !strings.HasPrefix(rel, "/") {
-					rel = "./" + rel
-				}
-				importPath := rel + ".js"
-				g.P(fmt.Sprintf("import type { %s } from \"%s\";", strings.Join(importedNames, ", "), importPath))
-				hasImports = true
-			}
+			importPath := relativeImportPath(file.GeneratedFilenamePrefix, dep.GeneratedFilenamePrefix)
+			g.P(fmt.Sprintf("import type { %s } from \"%s\";", strings.Join(importedNames, ", "), importPath))
+			hasImports = true
 		}
 	}
 	if hasImports {
 		g.P()
 	}
 
-	// Generate Messages (Interfaces)
 	var generateAllMessages func(messages []*protogen.Message)
 	generateAllMessages = func(messages []*protogen.Message) {
 		for _, msg := range messages {
@@ -102,7 +94,6 @@ func generateFile(gen *protogen.Plugin, file *protogen.File) {
 	}
 	generateAllMessages(file.Messages)
 
-	// Generate Services (Classes)
 	for _, service := range file.Services {
 		generateService(g, service)
 	}
@@ -152,7 +143,7 @@ func generateMessage(g *protogen.GeneratedFile, msg *protogen.Message) {
 		tsType := getTSType(field)
 		opt := ""
 		if field.Desc.HasOptionalKeyword() || field.Desc.IsList() {
-			opt = "?" // simplistic optional handling
+			opt = "?"
 		}
 		g.P("  ", field.Desc.JSONName(), opt, ": ", tsType, ";")
 	}
@@ -179,7 +170,7 @@ func getBaseTSType(field *protogen.Field) string {
 	case "int64", "uint64", "sint64", "fixed64", "sfixed64", "string":
 		return "string"
 	case "bytes":
-		return "Uint8Array | string" // Using string for base64
+		return "Uint8Array | string"
 	case "message":
 		return field.Message.GoIdent.GoName
 	case "enum":
@@ -207,7 +198,7 @@ func generateMethod(g *protogen.GeneratedFile, method *protogen.Method) {
 	rule, ok := httpExt.(*annotations.HttpRule)
 
 	httpMethod := "POST"
-	path := fmt.Sprintf("/%s/%s", method.Parent.Desc.FullName(), method.Desc.Name()) // fallback
+	path := fmt.Sprintf("/%s/%s", method.Parent.Desc.FullName(), method.Desc.Name())
 	body := ""
 
 	if ok && rule != nil {
@@ -234,20 +225,22 @@ func generateMethod(g *protogen.GeneratedFile, method *protogen.Method) {
 	reqType := method.Input.GoIdent.GoName
 	respType := method.Output.GoIdent.GoName
 
+	grpcMethod := fmt.Sprintf("/%s/%s", method.Parent.Desc.FullName(), method.Desc.Name())
+
 	g.P("  async ", method.Desc.Name(), "(request: ", reqType, ", options?: RequestOptions): Promise<", respType, "> {")
 
 	g.P("    const path = `", replacePathVars(path), "`;")
 
 	if httpMethod == "GET" || httpMethod == "DELETE" {
-		g.P("    return this.client.request<", respType, ">(path, '", httpMethod, "', undefined, request, options);")
+		g.P("    return this.client.request<", respType, ">(path, '", httpMethod, "', undefined, request, options, '", grpcMethod, "');")
 	} else {
 		if body == "*" {
-			g.P("    return this.client.request<", respType, ">(path, '", httpMethod, "', request, undefined, options);")
+			g.P("    return this.client.request<", respType, ">(path, '", httpMethod, "', request, undefined, options, '", grpcMethod, "');")
 		} else if body != "" {
 			g.P("    const bodyObj = (request as any).", snakeToCamel(body), ";")
-			g.P("    return this.client.request<", respType, ">(path, '", httpMethod, "', bodyObj, request, options);")
+			g.P("    return this.client.request<", respType, ">(path, '", httpMethod, "', bodyObj, request, options, '", grpcMethod, "');")
 		} else {
-			g.P("    return this.client.request<", respType, ">(path, '", httpMethod, "', request, undefined, options);")
+			g.P("    return this.client.request<", respType, ">(path, '", httpMethod, "', request, undefined, options, '", grpcMethod, "');")
 		}
 	}
 	g.P("  }")
@@ -301,3 +294,145 @@ func snakeToCamel(s string) string {
 	}
 	return res.String()
 }
+
+func relativeImportPath(fromPrefix, toPrefix string) string {
+	dir := path.Dir(fromPrefix)
+	rel, err := filepath.Rel(filepath.FromSlash(dir), filepath.FromSlash(toPrefix))
+	if err != nil {
+		rel = path.Base(toPrefix)
+	}
+	rel = filepath.ToSlash(rel)
+	if !strings.HasPrefix(rel, ".") && !strings.HasPrefix(rel, "/") {
+		rel = "./" + rel
+	}
+	return rel + ".js"
+}
+
+const runtimeFilePrefix = "veloce_client"
+
+func generateRuntimeFile(gen *protogen.Plugin) {
+	g := gen.NewGeneratedFile(runtimeFilePrefix+".ts", "")
+	g.P("// Code generated by protoc-gen-veloce. DO NOT EDIT.")
+	g.P()
+	g.P(runtimeClientSource)
+}
+
+const runtimeClientSource = `export const VELOCE_DEBUG_METHOD_HEADER = "X-Grpc-Method";
+
+export interface RequestOptions {
+    headers?: Record<string, string>;
+    signal?: AbortSignal;
+}
+
+export interface VeloceClientConfig {
+    baseUrl: string;
+    fetch?: typeof fetch;
+    interceptors?: Array<(request: Request) => Request | Promise<Request>>;
+    debug?: boolean;
+}
+
+export class VeloceError extends Error {
+    constructor(
+        public readonly statusCode: number,
+        public readonly statusRaw: any,
+        message: string
+    ) {
+        super(message);
+        this.name = "VeloceError";
+        Object.setPrototypeOf(this, VeloceError.prototype);
+    }
+}
+
+export class VeloceClient {
+    private readonly baseUrl: string;
+    private readonly customFetch: typeof fetch;
+    private readonly interceptors: Array<(req: Request) => Request | Promise<Request>>;
+    private readonly debug: boolean;
+
+    constructor(config: VeloceClientConfig) {
+        this.baseUrl = config.baseUrl.replace(/\/$/, "");
+
+        this.customFetch = config.fetch || (typeof globalThis !== 'undefined' ? globalThis.fetch.bind(globalThis) : (fetch ? fetch.bind(globalThis) : undefined as any));
+        if (!this.customFetch) {
+            throw new Error("No fetch implementation provided or found in global scope");
+        }
+
+        this.interceptors = config.interceptors || [];
+        this.debug = config.debug ?? false;
+    }
+
+    async request<T>(
+        path: string,
+        method: string,
+        body?: any,
+        requestObj?: any,
+        options?: RequestOptions,
+        grpcMethod?: string
+    ): Promise<T> {
+        const url = new URL(` + "`${this.baseUrl}${path}`" + `);
+
+        if (requestObj && (method === "GET" || method === "DELETE")) {
+            Object.entries(requestObj).forEach(([key, value]) => {
+                if (value !== undefined && value !== null && value !== "") {
+                    url.searchParams.append(key, String(value));
+                }
+            });
+        }
+
+        const headers: Record<string, string> = {
+            "Content-Type": "application/json",
+            ...(options?.headers || {}),
+        };
+
+        if (this.debug && grpcMethod) {
+            headers[VELOCE_DEBUG_METHOD_HEADER] = grpcMethod;
+        }
+
+        let reqInit: RequestInit = {
+            method,
+            headers,
+          ...(options?.signal && { signal: options?.signal }),
+        };
+
+        if (body) {
+            reqInit.body = JSON.stringify(body);
+        }
+
+        let req = new Request(url.toString(), reqInit);
+
+        for (const interceptor of this.interceptors) {
+            req = await interceptor(req);
+        }
+
+        const response = await this.customFetch(req);
+
+        const isJson = response.headers.get("content-type")?.includes("application/json");
+
+        if (!response.ok) {
+            let errData;
+            if (isJson) {
+                errData = await response.json();
+                throw new VeloceError(response.status, errData, errData.message || response.statusText);
+            } else {
+                const text = await response.text();
+                throw new VeloceError(response.status, null, text || response.statusText);
+            }
+        }
+
+        if (isJson) {
+            const respObj = await response.json();
+            return respObj as T;
+        }
+
+        const textResp = await response.text();
+        if (!textResp) {
+            return {} as T;
+        }
+        try {
+            return JSON.parse(textResp) as T;
+        } catch {
+            return textResp as any;
+        }
+    }
+}
+`

@@ -7,11 +7,13 @@ If you use `grpc-gateway`, you know it exposes a REST interface to your gRPC ser
 ## Features
 
 
+- **Zero Runtime Dependencies:** The generator emits its own runtime client (`veloce_client.ts`) alongside your services, so the generated output is fully self-contained — there is no `@vlce/veloce-client` (or any other) npm package to install.
 - **REST-Native Routes:** Automatically resolves path variables (`{id}`) from the `google.api.http` annotations into standard JS template literals. 
 - **Native TypeScript Types:** Emits native TypeScript definitions (interfaces and type aliases) rather than bloated runtime wrappers.
 - **Well-Known Type (WKT) JSON Mapping:** Standard types like `google.protobuf.Struct` and `google.protobuf.Timestamp` are generated natively as mapped values (e.g. `export type Timestamp = string;`) corresponding directly to how `grpc-gateway` serializes them into JSON.
 - **Nested Types:** Full support for recursively generated nested message definitions using standard protobuf structural conventions (`Message_NestedMessage`).
 - **Interceptors:** The generated client is designed to be easily wrapped with custom interceptors for features like logging, retries, or authentication.
+- **Debug Method Header:** Construct the client with `{ debug: true }` (local development only) to attach the fully-qualified gRPC method name as an `X-Grpc-Method` request header. It is never sent unless `debug` is enabled, so production traffic stays clean.
 
 ## Installation
 
@@ -59,13 +61,13 @@ protoc \
 
 ## How It Works Under The Hood
 
-The generated service methods directly depend on a simple client instance called `VeloceClient` (imported from `@vlce/veloce-client`). 
+The generated service methods depend on a simple client called `VeloceClient`, which the generator emits into your output directory as `veloce_client.ts`. Generated service files import it via a relative path, so nothing needs to be installed from npm.
 
 When setting up your frontend, initialize the client, feed it your base gateway URL, and pass it to the generated classes to manage the REST bindings:
 
 ```typescript
 import { MyServiceClient } from "./gen/my_service.js";
-import { VeloceClient } from "@vlce/veloce-client";
+import { VeloceClient } from "./gen/veloce_client.js";
 
 // Setup your transport layer
 const client = new VeloceClient({ baseUrl: "https://api.myproject.com" });
@@ -76,6 +78,14 @@ const mySvc = new MyServiceClient(client);
 // Call standard proto methods that map to REST beneath the hood
 const res = await mySvc.GetUser({ id: "123" });
 console.log(res.name);
+```
+
+During local development, enable the debug method header to trace which gRPC method each request maps to:
+
+```typescript
+// Sends an `X-Grpc-Method: /pkg.Service/Method` header with every request.
+// Omit `debug` (or set it false) in production and no such header is sent.
+const client = new VeloceClient({ baseUrl: "http://localhost:8080", debug: true });
 ```
 
 ## Development

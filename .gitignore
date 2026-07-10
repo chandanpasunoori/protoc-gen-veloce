@@ -27,3 +27,5 @@ proto/test/v1/rpcs.proto
 test/v1/messages.ts
 
 test/v1/rpcs.ts
+
+veloce_client.ts
